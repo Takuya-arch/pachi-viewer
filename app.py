@@ -1,68 +1,104 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
-import matplotlib.pyplot as plt
+import sqlite3
+import plotly.express as px
 
-st.set_page_config(layout="wide")
-st.title("ワンダーランド西新 - パチンコデータ分析ビューア")
+# ページ基本設定
+st.set_page_config(page_title="パチンコ 差玉データアナライザー", layout="wide")
 
-# データベースから全データを安全に読み込む関数
-def load_all_data():
-    try:
-        conn = sqlite3.connect("pachi_data.db")
-        df = pd.read_sql("SELECT date, unit, machine_name, diff_balls FROM slump_data ORDER BY date DESC, unit ASC", conn)
-        conn.close()
-        return df
-    except Exception:
-        # テーブルがまだ無い場合やエラー時は空のDataFrameを返す
-        return pd.DataFrame()
+# データベース接続関数
+def load_data():
+    conn = sqlite3.connect("pachi_data.db")
+    df = pd.read_sql_query("SELECT * FROM slump_data", conn)
+    conn.close()
+    return df
 
-df_all = load_all_data()
+st.title("🎰 パチンコ 差玉＆スランプグラフ アナライザー")
 
-if df_all.empty:
-    st.info("💡 現在、データベースにデータがありません。\n\n今夜の自動データ収集（タスクスケジューラ）が実行されると、ここにデータやグラフが表示されます！")
-else:
-    tab1, tab2 = st.tabs(["📊 個別グラフ詳細", "📋 全台一覧（横スクロール確認）"])
+try:
+    df = load_data()
 
-    with tab1:
-        st.subheader("台ごとの詳細スランプグラフ")
-        units_with_names = df_all[['unit', 'machine_name']].drop_duplicates().values
-        unit_options = [f"{row[0]}番台 : {row[1]}" for row in units_with_names]
-        
-        selected_option = st.selectbox("確認したい台を選択してください", unit_options)
-        selected_unit = selected_option.split("番台")[0]
+    if df.empty:
+        st.warning("データベースにまだデータがありません。`test13.py` を実行してデータを収集してください。")
+        st.stop()
 
-        days_choice = st.radio("表示期間", ["直近 7日間", "直近 30日間"], horizontal=True)
-        days_num = 7 if "7日間" in days_choice else 30
+    # 日付型変換・並び替え
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values(['hall_name', 'unit', 'date'])
 
-        df_unit = df_all[df_all['unit'] == selected_unit].sort_values('date', ascending=True).tail(days_num)
+    # --- サイドバーフィルター ---
+    st.sidebar.header("🔍 検索・絞り込み")
 
-        if df_unit.empty:
-            st.info("データがありません。")
-        else:
-            machine_title = df_unit['machine_name'].iloc[0]
-            
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.plot(df_unit['date'], df_unit['diff_balls'], marker='o', color='purple', linewidth=2)
-            ax.set_title(f"{selected_unit}番台 ({machine_title})", fontsize=12)
-            ax.set_xlabel("日付")
-            ax.set_ylabel("差玉数")
-            plt.xticks(rotation=45)
-            ax.grid(True)
-            fig.tight_layout()
+    # 1. 店舗選択（hall_nameカラムが無い旧データへの対策付き）
+    if 'hall_name' in df.columns:
+        hall_list = df['hall_name'].unique().tolist()
+        # 未指定データを補正
+        hall_list = [h if h else "ワンダーランド西新" for h in hall_list]
+        hall_list = sorted(list(set(hall_list)))
+    else:
+        hall_list = ["ワンダーランド西新"]
 
-            st.pyplot(fig)
+    selected_hall = st.sidebar.selectbox("① 店舗を選択", hall_list)
 
-    with tab2:
-        st.subheader("全台データ一覧表")
-        st.dataframe(
-            df_all,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "date": "日付",
-                "unit": "台番号",
-                "machine_name": "機種名",
-                "diff_balls": st.column_config.NumberColumn("差玉数", format="%d 玉")
-            }
+    # 店舗フィルタリング
+    if 'hall_name' in df.columns:
+        df_filtered = df[df['hall_name'] == selected_hall].copy()
+    else:
+        df_filtered = df.copy()
+
+    # 2. 機種フィルタ
+    machine_list = ["全機種"] + sorted(df_filtered['machine_name'].dropna().unique().tolist())
+    selected_machine = st.sidebar.selectbox("② 機種を選択", machine_list)
+
+    if selected_machine != "全機種":
+        df_filtered = df_filtered[df_filtered['machine_name'] == selected_machine]
+
+    # 3. 台番号フィルタ
+    unit_list = ["全台"] + sorted(df_filtered['unit'].unique().tolist())
+    selected_unit = st.sidebar.selectbox("③ 台番号を選択", unit_list)
+
+    if selected_unit != "全台":
+        df_filtered = df_filtered[df_filtered['unit'] == selected_unit]
+
+    # --- 通算差玉（累計）の計算 ---
+    df_filtered['cum_diff'] = df_filtered.groupby('unit')['diff_balls'].cumsum()
+
+    # --- グラフ表示 ---
+    st.subheader(f"📊 {selected_hall} のスランプグラフ")
+
+    if selected_unit != "全台":
+        # 単一台の表示：通算スランプグラフ
+        fig = px.line(
+            df_filtered,
+            x='date',
+            y='cum_diff',
+            markers=True,
+            title=f"{selected_unit}番台 [{df_filtered['machine_name'].iloc[-1]}] の差玉推移",
+            labels={'date': '日付', 'cum_diff': '累計差玉数（玉）'}
         )
+        fig.add_hline(y=0, line_dash="dash", line_color="gray")
+        st.plotly_chart(fig, use_container_width=True)
+
+    else:
+        # 複数台の表示：日別の全台合計または指定機種の合計差玉
+        daily_summary = df_filtered.groupby('date')['diff_balls'].sum().reset_index()
+        daily_summary['cum_diff'] = daily_summary['diff_balls'].cumsum()
+
+        fig = px.line(
+            daily_summary,
+            x='date',
+            y='cum_diff',
+            markers=True,
+            title=f"{selected_machine} - 全体通算差玉推移",
+            labels={'date': '日付', 'cum_diff': '累計差玉数（玉）'}
+        )
+        fig.add_hline(y=0, line_dash="dash", line_color="gray")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- データ一覧表表示 ---
+    st.subheader("📋 取得データ一覧")
+    display_cols = [col for col in ['date', 'hall_name', 'unit', 'machine_name', 'diff_balls'] if col in df_filtered.columns]
+    st.dataframe(df_filtered[display_cols].sort_values('date', ascending=False), use_container_width=True)
+
+except Exception as e:
+    st.error(f"データの読み込み中にエラーが発生しました: {e}")
