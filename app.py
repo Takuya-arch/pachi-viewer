@@ -1,66 +1,57 @@
-from playwright.sync_api import sync_playwright
+import streamlit as st
 import sqlite3
-import datetime
+import matplotlib.pyplot as plt
 
-def save_data(date_str, unit, diff_balls):
-    conn = sqlite3.connect(r"C:\Users\Owner\Desktop\pachi_data.db")
+st.title("パチンコ スランプグラフ・ビューア")
+st.write("長期蓄積データの動的分析ダッシュボード")
+
+# データベースから保存されているすべての台番号を自動で取得
+def get_available_units():
+    conn = sqlite3.connect("pachi_data.db")
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS slump_data (
-            date TEXT,
-            unit TEXT,
-            diff_balls INTEGER,
-            UNIQUE(date, unit)
-        )
-    """)
-    cursor.execute("""
-        INSERT OR REPLACE INTO slump_data (date, unit, diff_balls)
-        VALUES (?, ?, ?)
-    """, (date_str, unit, diff_balls))
-    conn.commit()
+    cursor.execute("SELECT DISTINCT unit FROM slump_data ORDER BY unit ASC")
+    rows = cursor.fetchall()
     conn.close()
+    return [row[0] for row in rows]
 
-def main():
-    target_units = ["401", "402", "403"]
-    today_str = str(datetime.date.today())
+units = get_available_units()
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True) # 自動化なので画面を非表示(True)にするとスマートです
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1"
-        )
-        page = context.new_page()
+if not units:
+    st.warning("データベースに台データがまだありません。")
+else:
+    # 複数台から選べるプルダウン
+    unit_choice = st.selectbox("確認したい台番号を選択してください", units)
 
-        for unit_num in target_units:
-            url = f"https://daidata.goraggio.com/100969/detail?unit={unit_num}"
-            try:
-                page.goto(url)
-                page.wait_for_timeout(3000)
+    # 期間の選択
+    days_choice = st.radio("表示期間を選択", ["直近 7日間", "直近 30日間"])
+    days_num = 7 if "7日間" in days_choice else 30
 
-                try:
-                    agree_button = page.get_by_role("button", name="利用規約に同意する")
-                    if agree_button.is_visible(timeout=2000):
-                        agree_button.evaluate("node => node.click()")
-                        page.wait_for_timeout(3000)
-                        page.goto(url)
-                        page.wait_for_load_state("networkidle")
-                        page.wait_for_timeout(3000)
-                except Exception:
-                    pass
+    def get_data_from_db(unit, days):
+        conn = sqlite3.connect("pachi_data.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT date, diff_balls FROM slump_data
+            WHERE unit = ?
+            ORDER BY date ASC
+            LIMIT ?
+        """, (unit, days))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows], [row[1] for row in rows]
 
-                # （実際のスクレイピング数値をここに当てはめます）
-                if unit_num == "403":
-                    diff_balls = 9080
-                elif unit_num == "402":
-                    diff_balls = 2500
-                else:
-                    diff_balls = 1850
+    dates, diffs = get_data_from_db(unit_choice, days_num)
 
-                save_data(today_str, unit_num, diff_balls)
-            except Exception as e:
-                print(f"Error {unit_num}: {e}")
+    if not dates:
+        st.warning(f"{unit_choice}番台のデータが見つかりませんでした。")
+    else:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(dates, diffs, marker='o', color='purple', linewidth=2)
+        ax.set_title(f"Slump Graph (Unit {unit_choice} - {days_choice})", fontsize=14)
+        ax.set_xlabel("Date", fontsize=12)
+        ax.set_ylabel("Diff Balls", fontsize=12)
+        plt.xticks(rotation=45)
+        ax.grid(True)
+        fig.tight_layout()
 
-        browser.close()
-
-if __name__ == "__main__":
-    main()
+        st.pyplot(fig)
+        st.success(f"{unit_choice}番台のデータを正常に読み込みました（{len(dates)}日分）")
