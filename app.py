@@ -3,29 +3,29 @@ import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
 
-st.set_page_config(layout="wide") # 画面を広く使えるように設定
+st.set_page_config(layout="wide")
 st.title("ワンダーランド西新 - パチンコデータ分析ビューア")
 
-# データベースから全データを読み込む関数
+# データベースから全データを安全に読み込む関数
 def load_all_data():
-    conn = sqlite3.connect("pachi_data.db")
-    df = pd.read_sql("SELECT date, unit, machine_name, diff_balls FROM slump_data ORDER BY date DESC, unit ASC", conn)
-    conn.close()
-    return df
+    try:
+        conn = sqlite3.connect("pachi_data.db")
+        df = pd.read_sql("SELECT date, unit, machine_name, diff_balls FROM slump_data ORDER BY date DESC, unit ASC", conn)
+        conn.close()
+        return df
+    except Exception:
+        # テーブルがまだ無い場合やエラー時は空のDataFrameを返す
+        return pd.DataFrame()
 
 df_all = load_all_data()
 
 if df_all.empty:
-    st.warning("データベースにデータがまだありません。")
+    st.info("💡 現在、データベースにデータがありません。\n\n今夜の自動データ収集（タスクスケジューラ）が実行されると、ここにデータやグラフが表示されます！")
 else:
-    # タブで「個別グラフ詳細」と「全台一覧表示」を切り替えられるようにする
     tab1, tab2 = st.tabs(["📊 個別グラフ詳細", "📋 全台一覧（横スクロール確認）"])
 
-    # --- タブ1：個別グラフ詳細 ---
     with tab1:
         st.subheader("台ごとの詳細スランプグラフ")
-        
-        # 台番号と機種名を組み合わせたリストを作成
         units_with_names = df_all[['unit', 'machine_name']].drop_duplicates().values
         unit_options = [f"{row[0]}番台 : {row[1]}" for row in units_with_names]
         
@@ -35,7 +35,6 @@ else:
         days_choice = st.radio("表示期間", ["直近 7日間", "直近 30日間"], horizontal=True)
         days_num = 7 if "7日間" in days_choice else 30
 
-        # 該当台のデータを抽出
         df_unit = df_all[df_all['unit'] == selected_unit].sort_values('date', ascending=True).tail(days_num)
 
         if df_unit.empty:
@@ -54,13 +53,8 @@ else:
 
             st.pyplot(fig)
 
-    # --- タブ2：全台一覧（横スクロール対応） ---
     with tab2:
         st.subheader("全台データ一覧表")
-        st.write("スマホやPCで横スクロールして詳細を確認できます。")
-
-        # 日付ごとの最新状況やマトリクス状、あるいは全件リストを表示
-        # 横スクロール可能なデータフレームとして綺麗に表示します
         st.dataframe(
             df_all,
             use_container_width=True,
