@@ -72,4 +72,3 @@ else:
                 "diff_balls": st.column_config.NumberColumn("差玉数", format="%d 玉")
             }
         )
-    ")
